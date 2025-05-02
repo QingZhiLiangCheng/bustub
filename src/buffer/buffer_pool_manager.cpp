@@ -43,39 +43,26 @@ auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * {
   frame_id_t frame_id = -1;
   std::scoped_lock lock(latch_);
   if (!free_list_.empty()) {
-    // ! get frame id from free list
-    frame_id = free_list_.back();
-    free_list_.pop_back();
+    frame_id = FreeListGetFrame();
     page = pages_ + frame_id;
   } else {
-    // ! get frame id from replacer
     if (!replacer_->Evict(&frame_id)) {
       return nullptr;
     }
     page = pages_ + frame_id;
+    if(page->is_dirty_) {
+      WritePageToDisk(page);
+    }
   }
-  // ! write back dirty page
-  if (page->IsDirty()) {
-    auto promise = disk_scheduler_->CreatePromise();
-    auto future = promise.get_future();
-    disk_scheduler_->Schedule({true, page->GetData(), page->GetPageId(), std::move(promise)});
-    future.get();
-    // ! clean
-    page->is_dirty_ = false;
-  }
-  // ! alloc a page id
   *page_id = AllocatePage();
-  // ! delete old map
-  page_table_.erase(page->GetPageId());
-  // ! add new map
-  page_table_.emplace(*page_id, frame_id);
-  // ! set page id
+  UpdatePageTable(page->GetPageId(), *page_id, frame_id);
+
   page->page_id_ = *page_id;
   page->pin_count_ = 1;
   page->ResetMemory();
-  // ! update replacer
-  replacer_->RecordAccess(frame_id);
-  replacer_->SetEvictable(frame_id, false);
+
+  UpdateReplacer(frame_id);
+
   return page;
 }
 
@@ -89,9 +76,7 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
     // ! get page
     auto frame_id = page_table_[page_id];
     auto page = pages_ + frame_id;
-    // ! uodate replacer
-    replacer_->RecordAccess(frame_id);
-    replacer_->SetEvictable(frame_id, false);
+    UpdateReplacer(frame_id);
     // ! update pin count
     page->pin_count_ += 1;
     return page;
@@ -100,42 +85,24 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
   Page *page;
   frame_id_t frame_id = -1;
   if (!free_list_.empty()) {
-    // ! get frame id from free list
-    frame_id = free_list_.back();
-    free_list_.pop_back();
+    frame_id = FreeListGetFrame();
     page = pages_ + frame_id;
   } else {
-    // ! get frame id from replacer
     if (!replacer_->Evict(&frame_id)) {
       return nullptr;
     }
     page = pages_ + frame_id;
   }
-  // ! write back dirty page
-  if (page->IsDirty()) {
-    auto promise = disk_scheduler_->CreatePromise();
-    auto future = promise.get_future();
-    disk_scheduler_->Schedule({true, page->GetData(), page->GetPageId(), std::move(promise)});
-    future.get();
-    // ! clean
-    page->is_dirty_ = false;
-  }
-  // ! erase old map
-  page_table_.erase(page->GetPageId());
-  // ! add new map
-  page_table_.emplace(page_id, frame_id);
+  WritePageToDisk(page);
+  UpdatePageTable(page->GetPageId(), page_id, frame_id);
   // ! update page
   page->page_id_ = page_id;
   page->pin_count_ = 1;
   page->ResetMemory();
   // ! update replacer
-  replacer_->RecordAccess(frame_id);
-  replacer_->SetEvictable(frame_id, false);
+  UpdateReplacer(frame_id);
   // ! read page from disk
-  auto promise = disk_scheduler_->CreatePromise();
-  auto future = promise.get_future();
-  disk_scheduler_->Schedule({false, page->GetData(), page->GetPageId(), std::move(promise)});
-  future.get();
+  ReadPageFromDisk(page);
   return page;
 }
 
@@ -177,15 +144,13 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
   }
   // ! get page
   auto page = pages_ + page_table_[page_id];
-  // ! write back
-  auto promise = disk_scheduler_->CreatePromise();
-  auto future = promise.get_future();
-  disk_scheduler_->Schedule({true, page->GetData(), page->GetPageId(), std::move(promise)});
-  future.get();
+  // ! write back to disk
+  WritePageToDisk(page);
   // ! clean
   page->is_dirty_ = false;
   return true;
 }
+
 void BufferPoolManager::FlushAllPages() {
   std::scoped_lock lock(latch_);
   for (size_t i = 0; i < pool_size_; i++) {
@@ -193,11 +158,7 @@ void BufferPoolManager::FlushAllPages() {
     if (page->GetPageId() == INVALID_PAGE_ID) {
       continue;
     }
-    // ! write back
-    auto promise = disk_scheduler_->CreatePromise();
-    auto future = promise.get_future();
-    disk_scheduler_->Schedule({true, page->GetData(), page->GetPageId(), std::move(promise)});
-    future.get();
+    WritePageToDisk(page);
     page->is_dirty_ = false;
   }
 }
@@ -239,7 +200,7 @@ auto BufferPoolManager::FetchPageBasic(page_id_t page_id) -> BasicPageGuard {
 
 auto BufferPoolManager::FetchPageRead(page_id_t page_id) -> ReadPageGuard {
   auto page = FetchPage(page_id);
-  if(page!= nullptr) {
+  if (page != nullptr) {
     page->RLatch();
   }
   return {this, page};
@@ -256,6 +217,32 @@ auto BufferPoolManager::FetchPageWrite(page_id_t page_id) -> WritePageGuard {
 auto BufferPoolManager::NewPageGuarded(page_id_t *page_id) -> BasicPageGuard {
   auto page = NewPage(page_id);
   return {this, page};
+}
+auto BufferPoolManager::FreeListGetFrame() -> frame_id_t {
+  frame_id_t frame_id = free_list_.back();
+  free_list_.pop_back();
+  return frame_id;
+}
+void BufferPoolManager::WritePageToDisk(Page *page) {
+  auto promise = disk_scheduler_->CreatePromise();
+  auto future = promise.get_future();
+  disk_scheduler_->Schedule({true, page->GetData(), page->GetPageId(), std::move(promise)});
+  future.get();
+  page->is_dirty_ = false;
+}
+void BufferPoolManager::UpdatePageTable(page_id_t old_page_id, page_id_t new_page_id, frame_id_t frame_id) {
+  page_table_.erase(old_page_id);
+  page_table_.emplace(new_page_id, frame_id);
+}
+void BufferPoolManager::UpdateReplacer(frame_id_t frame_id) {
+  replacer_->RecordAccess(frame_id);
+  replacer_->SetEvictable(frame_id, false);
+}
+void BufferPoolManager::ReadPageFromDisk(Page *page) {
+  auto promise = disk_scheduler_->CreatePromise();
+  auto future = promise.get_future();
+  disk_scheduler_->Schedule({false, page->GetData(), page->GetPageId(), std::move(promise)});
+  future.get();
 }
 
 }  // namespace bustub

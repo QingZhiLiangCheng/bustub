@@ -208,5 +208,12 @@ class BufferPoolManager {
   }
 
   // TODO(student): You may add additional private members and helper functions
+
+  auto FreeListGetFrame() -> frame_id_t ;
+
+  void WritePageToDisk(Page* page);
+  void UpdatePageTable(page_id_t old_page_id, page_id_t new_page_id, frame_id_t frame_id);
+  void UpdateReplacer(frame_id_t frame_id);
+  void ReadPageFromDisk(Page *page);
 };
 }  // namespace bustub
