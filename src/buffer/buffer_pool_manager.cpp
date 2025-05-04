@@ -50,7 +50,7 @@ auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * {
       return nullptr;
     }
     page = pages_ + frame_id;
-    if(page->is_dirty_) {
+    if (page->is_dirty_) {
       WritePageToDisk(page);
     }
   }
