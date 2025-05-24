@@ -14,13 +14,13 @@
 
 namespace bustub {
 
-HashJoinExecutor::HashJoinExecutor(ExecutorContext* exec_ctx, const HashJoinPlanNode* plan,
-                                   std::unique_ptr<AbstractExecutor>&& left_child,
-                                   std::unique_ptr<AbstractExecutor>&& right_child) :
-                                                                                      AbstractExecutor(exec_ctx),
-                                                                                      plan_(plan),
-                                                                                      left_child_(std::move(left_child)),
-                                                                                      right_child_(std::move(right_child)) {
+HashJoinExecutor::HashJoinExecutor(ExecutorContext *exec_ctx, const HashJoinPlanNode *plan,
+                                   std::unique_ptr<AbstractExecutor> &&left_child,
+                                   std::unique_ptr<AbstractExecutor> &&right_child)
+    : AbstractExecutor(exec_ctx),
+      plan_(plan),
+      left_child_(std::move(left_child)),
+      right_child_(std::move(right_child)) {
   if (!(plan->GetJoinType() == JoinType::LEFT || plan->GetJoinType() == JoinType::INNER)) {
     // Note for 2023 Fall: You ONLY need to implement left join and inner join.
     throw bustub::NotImplementedException(fmt::format("join type {} not supported", plan->GetJoinType()));
@@ -33,7 +33,7 @@ void HashJoinExecutor::Init() {
   left_bool_ = left_child_->Next(&left_tuple_, &left_rid_);
   Tuple right_tuple{};
   RID right_rid{};
-  //构建哈希表
+  // 构建哈希表
   jht_ = std::make_unique<SimpleHashJoinHashTable>();
   // 遍历子执行器，将右子执行器中的获取的数据插入到join哈希表中
   while (right_child_->Next(&right_tuple, &right_rid)) {
@@ -52,7 +52,7 @@ void HashJoinExecutor::Init() {
   }
 }
 
-auto HashJoinExecutor::Next(Tuple* tuple, RID* rid) -> bool {
+auto HashJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
   while (true) {
     // 如果right_tuple_不为空，且jht_iterator_未遍历完，则遍历输出
     // 一个左tuple可能匹配多个右tuple
@@ -66,7 +66,7 @@ auto HashJoinExecutor::Next(Tuple* tuple, RID* rid) -> bool {
       for (uint32_t i = 0; i < this->right_child_->GetOutputSchema().GetColumnCount(); i++) {
         values.emplace_back(right_tuple.GetValue(&this->right_child_->GetOutputSchema(), i));
       }
-      *tuple = Tuple{ values, &GetOutputSchema() };
+      *tuple = Tuple{values, &GetOutputSchema()};
       ++jht_iterator_;
       return true;
     }
@@ -82,7 +82,7 @@ auto HashJoinExecutor::Next(Tuple* tuple, RID* rid) -> bool {
         values.emplace_back(
             ValueFactory::GetNullValueByType(this->right_child_->GetOutputSchema().GetColumn(i).GetType()));
       }
-      *tuple = Tuple{ values, &GetOutputSchema() };
+      *tuple = Tuple{values, &GetOutputSchema()};
       has_done_ = true;
       return true;
     }
